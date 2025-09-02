@@ -1,0 +1,1485 @@
+import React, { useState, useEffect, useRef, useCallback } from 'react';
+// 移除了所有 Firebase 相關的導入
+
+// Utility function to generate a unique ID
+const generateUniqueId = () => crypto.randomUUID();
+
+// Apps Script Web App URL (目前已停用同步功能)
+const APPS_SCRIPT_WEB_APP_URL = ''; // 設置為空字串，表示暫時不使用 Apps Script
+
+// 全局樣式，避免 React 錯誤
+const globalStyles = `
+    @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap');
+    body { font-family: 'Inter', sans-serif; }
+    .grid-cell.forbidden {
+        background-color: #fca5a5; /* 紅色-300 */
+    }
+    .grid-cell.selected {
+        border: 2px solid #3b82f6; /* 藍色-500 */
+    }
+    .grid-cell.drag-over {
+        background-color: #bfdbfe; /* 藍色-200 */
+    }
+    .student-name-list button.selected {
+        background-color: #bfdbfe; /* 藍色-200 */
+    }
+    .student-name-list button.has-condition {
+        color: #8b5cf6; /* 紫色-500 */
+    }
+    .assigned-seat-grid-cell.selected-seat {
+        background-color: #60a5fa; /* 藍色-400 */
+        color: white;
+        font-weight: bold;
+    }
+`;
+
+const App = () => {
+    const [currentStep, setCurrentStep] = useState(1);
+    const [studentNamesInput, setStudentNamesInput] = useState('');
+    const [students, setStudents] = useState([]); // 學生陣列: { id, name }
+    const [rows, setRows] = useState(5);
+    const [cols, setCols] = useState(5);
+    const [forbiddenSeats, setForbiddenSeats] = useState([]); // 禁選座位陣列: {row, col}
+    const [selectedStudentId, setSelectedStudentId] = useState(null); // 用於條件設定和步驟4的高亮顯示
+    const [seatingConditions, setSeatingConditions] = useState({}); // 學生條件物件
+    const [seatingChart, setSeatingChart] = useState([]); // 二維座位表陣列
+    const [history, setHistory] = useState([]); // 用於撤銷/重做
+    const [historyIndex, setHistoryIndex] = useState(-1);
+    const [isGenerating, setIsGenerating] = useState(false);
+
+    const messageBoxRef = useRef(null);
+    const messageTimeoutRef = useRef(null);
+    const chartRef = useRef(null); // 用於可能的截圖（目前PDF匯出已移除）
+
+    // 顯示訊息框的函數
+    const showMessageBox = useCallback((message, type = 'info') => {
+        if (messageBoxRef.current) {
+            messageBoxRef.current.textContent = message;
+            messageBoxRef.current.className = `fixed bottom-4 right-4 p-4 rounded-lg shadow-lg z-50 transition-opacity duration-300 ${
+                type === 'error' ? 'bg-red-500 text-white' :
+                type === 'success' ? 'bg-green-500 text-white' :
+                'bg-blue-500 text-white'
+            } opacity-100`;
+
+            if (messageTimeoutRef.current) {
+                clearTimeout(messageTimeoutRef.current);
+            }
+            messageTimeoutRef.current = setTimeout(() => {
+                if (messageBoxRef.current) {
+                    messageBoxRef.current.className = messageBoxRef.current.className.replace('opacity-100', 'opacity-0');
+                }
+            }, 3000);
+        }
+    }, []);
+
+    // 將當前座位表添加到歷史記錄中 (用於撤銷/重做)
+    const addChartToHistory = useCallback((chart) => {
+        setHistory(prevHistory => {
+            const newHistory = prevHistory.slice(0, historyIndex + 1);
+            return [...newHistory, chart];
+        });
+        setHistoryIndex(prevIndex => prevIndex + 1);
+    }, [historyIndex]);
+
+    // 在座位表首次載入或生成時初始化歷史記錄
+    useEffect(() => {
+        if (seatingChart.length > 0 && historyIndex === -1) {
+            addChartToHistory(seatingChart);
+        }
+    }, [seatingChart, historyIndex, addChartToHistory]);
+
+    // 當步驟改變時，清除選中的學生 ID，避免視覺混淆
+    useEffect(() => {
+        setSelectedStudentId(null);
+    }, [currentStep]);
+
+    // 處理學生姓名文本框的變化
+    const handleStudentNamesChange = (e) => {
+        setStudentNamesInput(e.target.value);
+        const names = e.target.value.split('\n').map(name => name.trim()).filter(name => name !== '');
+        const newStudents = names.map(name => {
+            const existingStudent = students.find(s => s.name === name);
+            // 如果學生已存在，保留其 ID，否則生成新的 ID
+            return existingStudent || { id: generateUniqueId(), name: name };
+        });
+        setStudents(newStudents);
+    };
+
+    // 處理行數變化
+    const handleRowsChange = (e) => {
+        const value = parseInt(e.target.value, 10);
+        setRows(isNaN(value) || value < 1 ? 1 : value);
+    };
+
+    // 處理列數變化
+    const handleColsChange = (e) => {
+        const value = parseInt(e.target.value, 10);
+        setCols(isNaN(value) || value < 1 ? 1 : value);
+    };
+
+    // 切換禁選座位狀態
+    const toggleForbiddenSeat = (r, c) => {
+        const index = forbiddenSeats.findIndex(seat => seat.row === r && seat.col === c);
+        if (index > -1) {
+            setForbiddenSeats(forbiddenSeats.filter(seat => !(seat.row === r && seat.col === c)));
+        } else {
+            setForbiddenSeats([...forbiddenSeats, { row: r, col: c }]);
+        }
+    };
+
+    // 檢查座位是否為禁選
+    const isForbidden = (r, c) => forbiddenSeats.some(seat => seat.row === r && seat.col === c);
+
+    // 處理學生選擇 (用於條件設定和座位表高亮)
+    const handleStudentSelect = (studentId) => {
+        setSelectedStudentId(selectedStudentId === studentId ? null : studentId);
+    };
+
+    // 獲取學生的條件
+    const getStudentCondition = (studentId) => seatingConditions[studentId] || {};
+
+    // 更新學生的條件
+    const updateStudentCondition = (studentId, key, value) => {
+        setSeatingConditions(prev => ({
+            ...prev,
+            [studentId]: {
+                ...prev[studentId],
+                [key]: value
+            }
+        }));
+    };
+
+    // 切換「不可同坐」條件
+    const handleCannotSitWithToggle = (targetId) => {
+        if (!selectedStudentId) return;
+        const currentConditions = getStudentCondition(selectedStudentId);
+        let cannotSitWith = currentConditions.cannotSitWith || [];
+
+        const existingIndex = cannotSitWith.findIndex(item => item.targetId === targetId);
+
+        if (existingIndex > -1) {
+            cannotSitWith = cannotSitWith.filter(item => item.targetId !== targetId);
+        } else {
+            cannotSitWith = [...cannotSitWith, { targetId, priority: '必須符合' }];
+        }
+        updateStudentCondition(selectedStudentId, 'cannotSitWith', cannotSitWith);
+    };
+
+    // 檢查「不可同坐」條件是否已選中
+    const isCannotSitWithSelected = (targetId) => {
+        if (!selectedStudentId) return false;
+        const conditions = getStudentCondition(selectedStudentId);
+        return (conditions.cannotSitWith || []).some(cs => cs.targetId === targetId);
+    };
+
+    // 切換「需要同坐」條件
+    const handleMustSitWithToggle = (targetId) => {
+        if (!selectedStudentId) return;
+        const currentConditions = getStudentCondition(selectedStudentId);
+        let mustSitWith = currentConditions.mustSitWith || [];
+
+        const existingIndex = mustSitWith.findIndex(item => item.targetId === targetId);
+
+        if (existingIndex > -1) {
+            mustSitWith = mustSitWith.filter(item => item.targetId !== targetId);
+        } else {
+            mustSitWith = [...mustSitWith, { targetId, priority: '必須符合' }];
+        }
+        updateStudentCondition(selectedStudentId, 'mustSitWith', mustSitWith);
+    };
+
+    // 檢查「需要同坐」條件是否已選中
+    const isMustSitWithSelected = (targetId) => {
+        if (!selectedStudentId) return false;
+        const conditions = getStudentCondition(selectedStudentId);
+        return (conditions.mustSitWith || []).some(ms => ms.targetId === targetId);
+    };
+
+    // 切換指定行條件
+    const handleAssignedRowToggle = (rowNum) => {
+        if (!selectedStudentId) return;
+        const conditions = getStudentCondition(selectedStudentId);
+        const assignedRows = conditions.assignedRows || [];
+        if (assignedRows.includes(rowNum)) {
+            updateStudentCondition(selectedStudentId, 'assignedRows', assignedRows.filter(r => r !== rowNum));
+        } else {
+            updateStudentCondition(selectedStudentId, 'assignedRows', [...assignedRows, rowNum]);
+        }
+    };
+
+    // 切換指定列條件
+    const handleAssignedColToggle = (colNum) => {
+        if (!selectedStudentId) return;
+        const conditions = getStudentCondition(selectedStudentId);
+        const assignedCols = conditions.assignedCols || [];
+        if (assignedCols.includes(colNum)) {
+            updateStudentCondition(selectedStudentId, 'assignedCols', assignedCols.filter(c => c !== colNum));
+        } else {
+            updateStudentCondition(selectedStudentId, 'assignedCols', [...assignedCols, colNum]);
+        }
+    };
+
+    // 選擇指定位置
+    const handleAssignedSeatSelect = (r, c) => {
+        if (!selectedStudentId) return;
+        const currentAssignedSeat = getStudentCondition(selectedStudentId).assignedSeat;
+        if (currentAssignedSeat && currentAssignedSeat.row === r && currentAssignedSeat.col === c) {
+            updateStudentCondition(selectedStudentId, 'assignedSeat', null); // 取消選擇
+        } else {
+            updateStudentCondition(selectedStudentId, 'assignedSeat', { row: r, col: c }); // 選擇
+        }
+    };
+
+    // 切換指定區域條件
+    const handleAssignedAreaToggle = (area, studentId) => {
+        const conditions = getStudentCondition(studentId);
+        const currentArea = conditions.assignedArea;
+        updateStudentCondition(studentId, 'assignedArea', currentArea === area ? null : area);
+    };
+
+    // 檢查學生是否有任何條件設定
+    const getStudentConditionStatus = (studentId) => {
+        const conditions = getStudentCondition(studentId);
+        return Object.keys(conditions).some(key => {
+            const value = conditions[key];
+            if (Array.isArray(value)) {
+                return value.length > 0;
+            }
+            if (typeof value === 'object' && value !== null) {
+                return Object.keys(value).length > 0;
+            }
+            return value !== null && value !== undefined && value !== '';
+        });
+    };
+
+    // 座位表生成邏輯 (核心演算法)
+    const generateSeatingChart = useCallback(() => {
+        setIsGenerating(true);
+        showMessageBox("正在生成座位表，請稍候...", "info");
+        console.log("--- 開始生成座位表 ---");
+
+        const maxAttempts = 12; // 嘗試生成有效座位表的次數，已增加到 12 次
+        let attemptCount = 0;
+        let finalChart = [];
+        let generationSuccess = false;
+        let lastConflictMessage = null;
+
+        const studentById = new Map(students.map(s => [s.id, s]));
+
+        // 輔助函數：檢查座位是否有效 (在範圍內，且非禁選)
+        const isValidSeat = (r, c) => r >= 0 && r < rows && c >= 0 && c < cols && !isForbidden(r, c);
+
+        // 輔助函數：獲取所有 8 個方向的鄰居
+        const getNeighbors = (r, c) => {
+            const neighbors = [];
+            const directions = [
+                [-1, 0], [1, 0], [0, -1], [0, 1], // 上、下、左、右
+                [-1, -1], [-1, 1], [1, -1], [1, 1] // 對角線
+            ];
+            for (const [dr, dc] of directions) {
+                const nr = r + dr;
+                const nc = c + dc;
+                if (isValidSeat(nr, nc)) {
+                    neighbors.push({ row: nr, col: nc });
+                }
+            }
+            return neighbors;
+        };
+
+        // 輔助函數：獲取左右相鄰的鄰居
+        const getAdjacentNeighbors = (r, c) => {
+            const neighbors = [];
+            const directions = [[0, -1], [0, 1]]; // 左、右
+            for (const [dr, dc] of directions) {
+                const nr = r + dr;
+                const nc = c + dc;
+                if (isValidSeat(nr, nc)) {
+                    neighbors.push({ row: nr, col: nc });
+                }
+            }
+            return neighbors;
+        };
+
+        // 輔助函數：獲取某一列中最後一個非禁選的行號
+        const getLastValidRowInColumn = (colIndex) => {
+            let lastValidRow = -1;
+            for (let r = rows - 1; r >= 0; r--) {
+                if (!isForbidden(r, colIndex)) {
+                    lastValidRow = r;
+                    break;
+                }
+            }
+            return lastValidRow;
+        };
+
+        // 預先計算每列的最後一個有效行，用於區域 A 的判斷
+        const lastValidRowsPerColumn = Array(cols).fill(null).map((_, c) => getLastValidRowInColumn(c));
+
+        // 輔助函數：檢查學生是否可以放置在給定座位
+        const checkPlacementValidity = (studentId, r, c, chartState, currentPlacedStudents) => {
+            if (!isValidSeat(r, c) || chartState[r][c] !== null) {
+                return { valid: false, conflictMessage: null, isTryConflict: false };
+            }
+
+            const conditions = getStudentCondition(studentId);
+            const student = studentById.get(studentId);
+
+            // 優先級 3: 不可同坐 (必須符合)
+            const cannotSitWithConditions = conditions.cannotSitWith || [];
+            for (const condition of cannotSitWithConditions) { // 正確的解構賦值
+                const { targetId } = condition;
+                const neighbors = getNeighbors(r, c);
+                const conflictNeighbor = neighbors.find(n => chartState[n.row][n.col] === targetId);
+                if (conflictNeighbor) {
+                    console.log(`  [checkPlacementValidity - 硬性衝突] 學生 ${student.name} 嘗試坐在 [${r + 1}, ${c + 1}]，但發現 ${getStudentNameById(targetId)} (ID: ${targetId}) 在相鄰的 [${conflictNeighbor.row + 1}, ${conflictNeighbor.col + 1}]，違反「不可同坐」。`);
+                    return { valid: false, conflictMessage: `學生 ${student.name} 無法坐在 [${r + 1}, ${c + 1}]，因為與 ${getStudentNameById(targetId)} 有「不可同坐」條件衝突。`, isTryConflict: false };
+                }
+            }
+
+            // 優先級 4: 需要同坐 (必須符合)
+            const mustSitWithConditions = conditions.mustSitWith || [];
+            for (const condition of mustSitWithConditions) { // 正確的解構賦值
+                const { targetId } = condition;
+                const targetStudent = studentById.get(targetId);
+                if (!targetStudent) continue;
+
+                let foundNeighbor = false;
+                const adjacentNeighbors = getAdjacentNeighbors(r, c);
+                const actualNeighbor = adjacentNeighbors.find(n => chartState[n.row][n.col] === targetId);
+                if (actualNeighbor) {
+                    foundNeighbor = true;
+                }
+
+                if (!foundNeighbor && currentPlacedStudents.has(targetId)) {
+                    console.log(`  [checkPlacementValidity - 硬性衝突] 學生 ${student.name} 嘗試坐在 [${r + 1}, ${c + 1}]，但已放置的 ${getStudentNameById(targetId)} 未在左右相鄰位置，違反「需要同坐」。`);
+                    return { valid: false, conflictMessage: `學生 ${student.name} 無法坐在 [${r + 1}, ${c + 1}]，因為與已放置的 ${getStudentNameById(targetId)} 有「需要同坐」條件衝突。`, isTryConflict: false };
+                }
+            }
+
+            // 優先級 5: 指定行/列 (必須符合)
+            if (conditions.assignedRows && conditions.assignedRows.length > 0 && !conditions.assignedRows.includes(r)) {
+                console.log(`  [checkPlacementValidity - 硬性衝突] 學生 ${student.name} 嘗試坐在 [${r + 1}, ${c + 1}]，但違反「指定行」條件。`);
+                return { valid: false, conflictMessage: `學生 ${student.name} 無法坐在 [${r + 1}, ${c + 1}]，因為與「指定行」條件衝突。`, isTryConflict: false };
+            }
+            if (conditions.assignedCols && conditions.assignedCols.length > 0 && !conditions.assignedCols.includes(c)) {
+                console.log(`  [checkPlacementValidity - 硬性衝突] 學生 ${student.name} 嘗試坐在 [${r + 1}, ${c + 1}]，但違反「指定列」條件。`);
+                return { valid: false, conflictMessage: `學生 ${student.name} 無法坐在 [${r + 1}, ${c + 1}]，因為與「指定列」條件衝突。`, isTryConflict: false };
+            }
+
+            // 優先級 6: 指定區域 (盡量符合) - 這是一個「盡量符合」的衝突
+            let isTryConflict = false;
+            if (conditions.assignedArea) {
+                let meetsAreaConstraint = false;
+                if (conditions.assignedArea === 'A') { // 最後一行、列1及列6
+                    const lastRowForThisCol = lastValidRowsPerColumn[c];
+                    if (r === lastRowForThisCol || c === 0 || c === 5) { // 檢查是否在每列的最後一行、第1列或第6列
+                        meetsAreaConstraint = true;
+                    }
+                } else if (conditions.assignedArea === 'B') { // 行1、2、3 (0-indexed: row 0, row 1, row 2)
+                    if (r === 0 || r === 1 || r === 2) {
+                        meetsAreaConstraint = true;
+                    }
+                }
+                if (!meetsAreaConstraint) {
+                    console.log(`  [checkPlacementValidity - 盡量符合衝突] 學生 ${student.name} 嘗試坐在 [${r + 1}, ${c + 1}]，但違反「指定區域」條件。`);
+                    isTryConflict = true; // 標記為「盡量符合」的衝突
+                }
+            }
+
+            return { valid: true, conflictMessage: null, isTryConflict: isTryConflict };
+        };
+
+
+        while (attemptCount < maxAttempts && !generationSuccess) {
+            attemptCount++;
+            console.log(`--- 第 ${attemptCount} 次嘗試 ---`);
+            let currentChart = Array(rows).fill(null).map(() => Array(cols).fill(null));
+            let studentsToPlace = [...students]; // 每次嘗試都重置學生列表
+            let placedStudents = new Set(); // 追蹤本次嘗試中已成功放置的學生
+            let currentAttemptSuccess = true;
+            let currentAttemptConflictMessage = null;
+
+            // 階段 1: 放置指定座位的學生 (必須符合)
+            console.log("--- 階段 1: 放置指定座位的學生 ---");
+            let remainingStudentsAfterAssignedSeat = [];
+            for (const student of studentsToPlace) {
+                const conditions = getStudentCondition(student.id);
+                if (conditions.assignedSeat && conditions.assignedSeat.row !== undefined && conditions.assignedSeat.col !== undefined) {
+                    const { row, col } = conditions.assignedSeat;
+                    if (!isValidSeat(row, col)) {
+                        currentAttemptConflictMessage = `錯誤：學生 ${student.name} 的指定座位 [${row + 1}, ${col + 1}] 是禁選位置或超出範圍。請修正。`;
+                        currentAttemptSuccess = false;
+                        break;
+                    }
+                    if (currentChart[row][col] !== null) {
+                        currentAttemptConflictMessage = `錯誤：學生 ${student.name} 的指定座位 [${row + 1}, ${col + 1}] 已被學生 ${getStudentNameById(currentChart[row][col])} 佔用。請修正。`;
+                        currentAttemptSuccess = false;
+                        break;
+                    }
+                    currentChart[row][col] = student.id;
+                    placedStudents.add(student.id);
+                    console.log(`[階段 1] 學生 ${student.name} (指定座位) 放置在 [${row + 1}, ${col + 1}]`);
+                } else {
+                    remainingStudentsAfterAssignedSeat.push(student);
+                }
+            }
+
+            if (!currentAttemptSuccess) {
+                lastConflictMessage = currentAttemptConflictMessage;
+                console.log(`--- 第 ${attemptCount} 次嘗試失敗 (階段 1 指定座位衝突)：${currentAttemptConflictMessage} ---`);
+                continue;
+            }
+            studentsToPlace = remainingStudentsAfterAssignedSeat;
+
+            // 階段 2: 放置需要同坐的學生對 (必須符合)
+            console.log("--- 階段 2: 放置需要同坐的學生對 ---");
+            const mustSitWithPairsToPlace = [];
+            const studentsInMustSitWithPairs = new Set();
+
+            studentsToPlace.forEach(student => {
+                const conditions = getStudentCondition(student.id);
+                conditions.mustSitWith?.forEach(partner => {
+                    // 確保每個配對只處理一次，且雙方都尚未放置
+                    if (!studentsInMustSitWithPairs.has(student.id) && !studentsInMustSitWithPairs.has(partner.targetId)) {
+                        const partnerExists = studentsToPlace.some(s => s.id === partner.targetId);
+                        if (partnerExists) {
+                            mustSitWithPairsToPlace.push([student.id, partner.targetId]);
+                            studentsInMustSitWithPairs.add(student.id);
+                            studentsInMustSitWithPairs.add(partner.targetId);
+                        }
+                    }
+                });
+            });
+
+            for (const pair of mustSitWithPairsToPlace) {
+                const [studentAId, studentBId] = pair;
+                const studentA = studentById.get(studentAId);
+                const studentB = studentById.get(studentBId);
+
+                if (placedStudents.has(studentAId) || placedStudents.has(studentBId)) {
+                    continue; // 如果其中一個學生已被放置，則跳過此配對
+                }
+
+                let pairPlaced = false;
+                const allAvailableSeats = [];
+                for (let r = 0; r < rows; r++) {
+                    for (let c = 0; c < cols; c++) {
+                        if (currentChart[r][c] === null && isValidSeat(r, c)) {
+                            allAvailableSeats.push({ r, c });
+                        }
+                    }
+                }
+                // 對可用座位進行排序，優先考慮第一行 (row 0)
+                allAvailableSeats.sort((a, b) => a.r - b.r); // 優先填滿前排 (row 0)
+
+                // 打亂可用座位 (在優先排序後，仍保持一定隨機性)
+                for (let i = allAvailableSeats.length - 1; i > 0; i--) {
+                    const j = Math.floor(Math.random() * (i + 1));
+                    [allAvailableSeats[i], allAvailableSeats[j]] = [allAvailableSeats[j], allAvailableSeats[i]];
+                }
+
+
+                for (const { r, c } of allAvailableSeats) {
+                    // 嘗試將學生 A 放置在 (r,c)
+                    placedStudents.add(studentAId);
+                    const { valid: validA } = checkPlacementValidity(studentAId, r, c, currentChart, placedStudents);
+                    placedStudents.delete(studentAId);
+
+                    if (!validA) continue;
+
+                    // 嘗試將學生 B 放置在 (r, c+1) (右側)
+                    const rB_right = r;
+                    const cB_right = c + 1;
+                    if (isValidSeat(rB_right, cB_right) && currentChart[rB_right][cB_right] === null) {
+                        placedStudents.add(studentAId); // 臨時將 A 視為已放置，用於檢查 B 的條件
+                        const { valid: validB_right } = checkPlacementValidity(studentBId, rB_right, cB_right, currentChart, placedStudents);
+                        placedStudents.delete(studentAId);
+
+                        if (validB_right) {
+                            currentChart[r][c] = studentAId;
+                            currentChart[rB_right][cB_right] = studentBId;
+                            placedStudents.add(studentAId);
+                            placedStudents.add(studentBId);
+                            console.log(`[階段 2] 學生對 ${studentA.name} 和 ${studentB.name} 放置在 [${r + 1}, ${c + 1}] 和 [${rB_right + 1}, ${cB_right + 1}]`);
+                            pairPlaced = true;
+                            break;
+                        }
+                    }
+
+                    if (pairPlaced) break;
+
+                    // 嘗試將學生 B 放置在 (r, c-1) (左側)
+                    const rB_left = r;
+                    const cB_left = c - 1;
+                    if (isValidSeat(rB_left, cB_left) && currentChart[rB_left][cB_left] === null) {
+                        placedStudents.add(studentAId); // 臨時將 A 視為已放置，用於檢查 B 的條件
+                        const { valid: validB_left } = checkPlacementValidity(studentBId, rB_left, cB_left, currentChart, placedStudents);
+                        placedStudents.delete(studentAId);
+
+                        if (validB_left) {
+                            currentChart[r][c] = studentAId;
+                            currentChart[rB_left][cB_left] = studentBId;
+                            placedStudents.add(studentAId);
+                            placedStudents.add(studentBId);
+                            console.log(`[階段 2] 學生對 ${studentA.name} 和 ${studentB.name} 放置在 [${r + 1}, ${c + 1}] 和 [${rB_left + 1}, ${cB_left + 1}]`);
+                            pairPlaced = true;
+                            break;
+                        }
+                    }
+                }
+
+                if (!pairPlaced) {
+                    currentAttemptConflictMessage = `無法為學生對 ${studentA.name} 和 ${studentB.name} 找到相鄰座位。`;
+                    currentAttemptSuccess = false;
+                    break;
+                }
+            }
+
+            if (!currentAttemptSuccess) {
+                lastConflictMessage = currentAttemptConflictMessage;
+                console.log(`--- 第 ${attemptCount} 次嘗試失敗 (階段 2 需要同坐衝突)：${currentAttemptConflictMessage} ---`);
+                continue;
+            }
+            // 從待放置列表中移除已放置的學生
+            studentsToPlace = studentsToPlace.filter(s => !placedStudents.has(s.id));
+
+
+            // 階段 3: 放置不可同坐 / 指定行 / 列的學生 (必須符合)
+            console.log("--- 階段 3: 放置不可同坐/指定行/列的學生 ---");
+            const phase3Students = studentsToPlace.filter(s => {
+                const cond = getStudentCondition(s.id);
+                return (cond.cannotSitWith?.length > 0 || cond.assignedRows?.length > 0 || cond.assignedCols?.length > 0);
+            }).sort((a, b) => {
+                // 根據條件複雜度排序，優先放置條件多的學生
+                const condA = getStudentCondition(a.id);
+                const condB = getStudentCondition(b.id);
+                let scoreA = 0;
+                let scoreB = 0;
+                if (condA.cannotSitWith?.length > 0) scoreA += 100;
+                if (condB.cannotSitWith?.length > 0) scoreB += 100;
+                if (condA.assignedRows?.length > 0 || condA.assignedCols?.length > 0) scoreA += 50;
+                if (condB.assignedRows?.length > 0 || condB.assignedCols?.length > 0) scoreB += 50;
+                return scoreB - scoreA;
+            });
+
+            for (const student of phase3Students) {
+                if (placedStudents.has(student.id)) continue;
+
+                let bestSeatForStudent = null;
+                const allAvailableSeats = []; // 重新收集所有可用座位
+                for (let r = 0; r < rows; r++) {
+                    for (let c = 0; c < cols; c++) {
+                        if (currentChart[r][c] === null && isValidSeat(r, c)) {
+                            allAvailableSeats.push({ r, c });
+                        }
+                    }
+                }
+                // 對可用座位進行排序，優先考慮第一行 (row 0)
+                allAvailableSeats.sort((a, b) => a.r - b.r); // 優先填滿前排 (row 0)
+
+                // 打亂可用座位 (在優先排序後，仍保持一定隨機性)
+                for (let i = allAvailableSeats.length - 1; i > 0; i--) {
+                    const j = Math.floor(Math.random() * (i + 1));
+                    [allAvailableSeats[i], allAvailableSeats[j]] = [allAvailableSeats[j], allAvailableSeats[i]];
+                }
+
+                for (const { r, c } of allAvailableSeats) {
+                    const { valid, conflictMessage } = checkPlacementValidity(student.id, r, c, currentChart, placedStudents);
+                    if (valid && !conflictMessage) { // 只考慮滿足所有硬性條件的座位
+                        bestSeatForStudent = { r, c };
+                        break;
+                    }
+                }
+
+                if (bestSeatForStudent) {
+                    currentChart[bestSeatForStudent.r][bestSeatForStudent.c] = student.id;
+                    placedStudents.add(student.id);
+                    console.log(`[階段 3] 學生 ${student.name} (不可同坐/指定行/列) 放置在 [${bestSeatForStudent.r + 1}, ${bestSeatForStudent.c + 1}]`);
+                } else {
+                    currentAttemptConflictMessage = `無法找到滿足學生 ${student.name} (不可同坐/指定行/列) 所有「必須符合」條件的可用座位。`;
+                    currentAttemptSuccess = false;
+                    break;
+                }
+            }
+
+            if (!currentAttemptSuccess) {
+                lastConflictMessage = currentAttemptConflictMessage;
+                console.log(`--- 第 ${attemptCount} 次嘗試失敗 (階段 3 不可同坐/指定行/列衝突)：${currentAttemptConflictMessage} ---`);
+                continue;
+            }
+            studentsToPlace = studentsToPlace.filter(s => !placedStudents.has(s.id));
+
+
+            // 階段 4: 放置指定區域的學生 (盡量符合)
+            console.log("--- 階段 4: 放置指定區域的學生 (盡量符合) ---");
+            const phase4Students = studentsToPlace.filter(s => {
+                const cond = getStudentCondition(s.id);
+                return cond.assignedArea;
+            });
+
+            for (const student of phase4Students) {
+                if (placedStudents.has(student.id)) continue;
+
+                let bestSeatForStudent = null;
+                let foundPerfectSeat = false;
+                const allAvailableSeats = []; // 重新收集所有可用座位
+                for (let r = 0; r < rows; r++) {
+                    for (let c = 0; c < cols; c++) {
+                        if (currentChart[r][c] === null && isValidSeat(r, c)) {
+                            allAvailableSeats.push({ r, c });
+                        }
+                    }
+                }
+                // 對可用座位進行排序，優先考慮第一行 (row 0)
+                allAvailableSeats.sort((a, b) => a.r - b.r); // 優先填滿前排 (row 0)
+
+                // 打亂可用座位 (在優先排序後，仍保持一定隨機性)
+                for (let i = allAvailableSeats.length - 1; i > 0; i--) {
+                    const j = Math.floor(Math.random() * (i + 1));
+                    [allAvailableSeats[i], allAvailableSeats[j]] = [allAvailableSeats[j], allAvailableSeats[i]];
+                }
+
+                for (const { r, c } of allAvailableSeats) {
+                    const { valid, conflictMessage, isTryConflict } = checkPlacementValidity(student.id, r, c, currentChart, placedStudents);
+                    if (valid && !conflictMessage) { // 必須符合的條件必須滿足
+                        if (!isTryConflict) { // 找到一個完美的座位 (沒有「盡量符合」的衝突)
+                            bestSeatForStudent = { r, c };
+                            foundPerfectSeat = true;
+                            break;
+                        } else if (!bestSeatForStudent) { // 如果還沒找到完美座位，則儲存第一個「盡量符合」的座位
+                            bestSeatForStudent = { r, c };
+                        }
+                    }
+                }
+
+                if (bestSeatForStudent) {
+                    currentChart[bestSeatForStudent.r][bestSeatForStudent.c] = student.id;
+                    placedStudents.add(student.id);
+                    console.log(`[階段 4] 學生 ${student.name} (指定區域) 放置在 [${bestSeatForStudent.r + 1}, ${bestSeatForStudent.c + 1}]`);
+                } else {
+                    currentAttemptConflictMessage = `無法找到滿足學生 ${student.name} (指定區域) 所有「必須符合」條件的可用座位。`;
+                    currentAttemptSuccess = false;
+                    break;
+                }
+            }
+
+            if (!currentAttemptSuccess) {
+                lastConflictMessage = currentAttemptConflictMessage;
+                console.log(`--- 第 ${attemptCount} 次嘗試失敗 (階段 4 指定區域衝突)：${currentAttemptConflictMessage} ---`);
+                continue;
+            }
+            studentsToPlace = studentsToPlace.filter(s => !placedStudents.has(s.id));
+
+
+            // 階段 5: 放置所有剩餘學生
+            console.log("--- 階段 5: 放置所有剩餘學生 ---");
+            for (const student of studentsToPlace) {
+                if (placedStudents.has(student.id)) continue;
+
+                let placedThisStudent = false;
+                const allAvailableSeats = []; // 重新收集所有可用座位
+                for (let r = 0; r < rows; r++) {
+                    for (let c = 0; c < cols; c++) {
+                        if (currentChart[r][c] === null && isValidSeat(r, c)) {
+                            allAvailableSeats.push({ r, c });
+                        }
+                    }
+                }
+                // 對可用座位進行排序，優先考慮第一行 (row 0)
+                allAvailableSeats.sort((a, b) => a.r - b.r); // 優先填滿前排 (row 0)
+
+                // 打亂可用座位 (在優先排序後，仍保持一定隨機性)
+                for (let i = allAvailableSeats.length - 1; i > 0; i--) {
+                    const j = Math.floor(Math.random() * (i + 1));
+                    [allAvailableSeats[i], allAvailableSeats[j]] = [allAvailableSeats[j], allAvailableSeats[i]];
+                }
+
+                for (const { r, c } of allAvailableSeats) {
+                    if (isValidSeat(r, c) && currentChart[r][c] === null) {
+                        currentChart[r][c] = student.id;
+                        placedStudents.add(student.id);
+                        console.log(`[階段 5] 學生 ${student.name} (剩餘學生) 放置在 [${r + 1}, ${c + 1}]`);
+                        placedThisStudent = true;
+                        break;
+                    }
+                }
+
+                if (!placedThisStudent) {
+                    currentAttemptConflictMessage = `無法為學生 ${student.name} 找到任何可用座位。`;
+                    currentAttemptSuccess = false;
+                    break;
+                }
+            }
+
+            if (!currentAttemptSuccess) {
+                lastConflictMessage = currentAttemptConflictMessage;
+                console.log(`--- 第 ${attemptCount} 次嘗試失敗 (階段 5 剩餘學生放置衝突)：${currentAttemptConflictMessage} ---`);
+                continue;
+            }
+
+            // 最終驗證 (確保所有「必須符合」條件都得到滿足)
+            console.log("--- 執行最終驗證 (本次嘗試的結果) ---");
+            let attemptVerificationPassed = true;
+            let attemptVerificationConflict = null;
+
+            const studentPositions = new Map();
+            for (let r = 0; r < rows; r++) {
+                for (let c = 0; c < cols; c++) {
+                    if (currentChart[r][c] !== null) {
+                        studentPositions.set(currentChart[r][c], { r, c });
+                    }
+                }
+            }
+
+            for (const student of students) {
+                const studentId = student.id;
+                const studentPos = studentPositions.get(studentId);
+                if (!studentPos) {
+                    attemptVerificationConflict = `驗證失敗：學生 ${student.name} 未被放置。`;
+                    attemptVerificationPassed = false;
+                    break;
+                }
+
+                const conditions = getStudentCondition(studentId);
+
+                // 驗證「不可同坐」
+                const cannotSitWithConditions = conditions.cannotSitWith || [];
+                for (const condition of cannotSitWithConditions) { // 正確的解構賦值
+                    const { targetId } = condition;
+                    const targetPos = studentPositions.get(targetId);
+                    if (targetPos) {
+                        const neighbors = getNeighbors(studentPos.r, studentPos.c);
+                        if (neighbors.some(n => currentChart[n.row][n.col] === targetId)) {
+                            attemptVerificationConflict = `驗證失敗：學生 ${student.name} 在 [${studentPos.r + 1}, ${studentPos.c + 1}] 與 ${getStudentNameById(targetId)} 在相鄰的 [${targetPos.r + 1}, ${targetPos.c + 1}]，違反「不可同坐」。`;
+                            attemptVerificationPassed = false;
+                            console.log(`  [最終驗證 - 失敗] ${attemptVerificationConflict}`);
+                            break;
+                        }
+                    }
+                }
+                if (!attemptVerificationPassed) break;
+
+                // 驗證「需要同坐」
+                const mustSitWithConditions = conditions.mustSitWith || [];
+                for (const condition of mustSitWithConditions) { // 正確的解構賦值
+                    const { targetId } = condition;
+                    const targetPos = studentPositions.get(targetId);
+                    if (targetPos) {
+                        let foundAdjacent = false;
+                        const adjacentNeighbors = getAdjacentNeighbors(studentPos.r, studentPos.c);
+                        if (adjacentNeighbors.some(n => currentChart[n.row][n.col] === targetId)) {
+                            foundAdjacent = true;
+                        }
+                        if (!foundAdjacent) {
+                            attemptVerificationConflict = `驗證失敗：學生 ${student.name} 在 [${studentPos.r + 1}, ${studentPos.c + 1}] 與 ${getStudentNameById(targetId)} 未左右相鄰，違反「需要同坐」。`;
+                            attemptVerificationPassed = false;
+                            console.log(`  [最終驗證 - 失敗] ${attemptVerificationConflict}`);
+                            break;
+                        }
+                    } else {
+                        attemptVerificationConflict = `驗證失敗：學生 ${student.name} 需要與 ${getStudentNameById(targetId)} 同坐，但 ${getStudentNameById(targetId)} 未被放置。`;
+                        attemptVerificationPassed = false;
+                        console.log(`  [最終驗證 - 失敗] ${attemptVerificationConflict}`);
+                        break;
+                    }
+                }
+                if (!attemptVerificationPassed) break;
+
+                // 驗證指定行/列
+                if (conditions.assignedRows && conditions.assignedRows.length > 0 && !conditions.assignedRows.includes(studentPos.r)) {
+                    attemptVerificationConflict = `驗證失敗：學生 ${student.name} 在 [${studentPos.r + 1}, ${studentPos.c + 1}] 違反「指定行」條件。`;
+                    attemptVerificationPassed = false;
+                    console.log(`  [最終驗證 - 失敗] ${attemptVerificationConflict}`);
+                    break;
+                }
+                if (conditions.assignedCols && conditions.assignedCols.length > 0 && !conditions.assignedCols.includes(studentPos.c)) {
+                    attemptVerificationConflict = `驗證失敗：學生 ${student.name} 在 [${studentPos.r + 1}, ${studentPos.c + 1}] 違反「指定列」條件。`;
+                    attemptVerificationPassed = false;
+                    console.log(`  [最終驗證 - 失敗] ${attemptVerificationConflict}`);
+                    break;
+                }
+
+                // 驗證指定位置
+                if (conditions.assignedSeat && (conditions.assignedSeat.row !== studentPos.r || conditions.assignedSeat.col !== studentPos.c)) {
+                    attemptVerificationConflict = `驗證失敗：學生 ${student.name} 在 [${studentPos.r + 1}, ${studentPos.c + 1}] 違反「指定位置」條件。應為 [${conditions.assignedSeat.row + 1}, ${conditions.assignedSeat.col + 1}]。`;
+                    attemptVerificationPassed = false;
+                    console.log(`  [最終驗證 - 失敗] ${attemptVerificationConflict}`);
+                    break;
+                }
+
+                // 驗證禁選位置
+                if (isForbidden(studentPos.r, studentPos.c)) {
+                    attemptVerificationConflict = `驗證失敗：學生 ${student.name} 在 [${studentPos.r + 1}, ${studentPos.c + 1}] 位於禁選位置。`;
+                    attemptVerificationPassed = false;
+                    console.log(`  [最終驗證 - 失敗] ${attemptVerificationConflict}`);
+                    break;
+                }
+            }
+
+            if (attemptVerificationPassed) {
+                generationSuccess = true;
+                finalChart = currentChart;
+                console.log(`--- 第 ${attemptCount} 次嘗試成功！並通過最終驗證。 ---`);
+            } else {
+                currentAttemptSuccess = false; // 標記本次嘗試因驗證失敗而失敗
+                lastConflictMessage = attemptVerificationConflict; // 儲存衝突訊息
+                console.log(`--- 第 ${attemptCount} 次嘗試失敗 (最終驗證未通過)：${currentAttemptConflictMessage} ---`);
+            }
+        }
+
+        if (generationSuccess) {
+            setSeatingChart(finalChart);
+            addChartToHistory(finalChart);
+            showMessageBox("座位表生成完成！", "success");
+            console.log("--- 座位表生成成功 ---", finalChart);
+        } else {
+            showMessageBox(`座位表生成失敗，已嘗試 ${maxAttempts} 次。原因：${lastConflictMessage || '無法找到滿足所有「必須符合」條件的配置。'}。請檢查條件是否矛盾。`, "error");
+            setSeatingChart([]); // 生成失敗時清空座位表
+            console.log("--- 座位表生成失敗，所有嘗試均未成功 ---", lastConflictMessage);
+        }
+        setIsGenerating(false);
+    }, [students, rows, cols, forbiddenSeats, seatingConditions, addChartToHistory, isForbidden, showMessageBox]);
+
+    // 處理拖曳開始事件
+    const handleDragStart = (e, studentId) => {
+        e.dataTransfer.setData('studentId', studentId);
+    };
+
+    // 處理拖曳經過事件
+    const handleDragOver = (e) => {
+        e.preventDefault(); // 允許放置
+    };
+
+    // 處理放置事件 (手動調整座位)
+    const handleDrop = (e, targetRow, targetCol) => {
+        e.preventDefault();
+        const draggedStudentId = e.dataTransfer.getData('studentId');
+
+        const newChart = JSON.parse(JSON.stringify(seatingChart)); // 深度複製座位表
+
+        let sourceRow = -1;
+        let sourceCol = -1;
+
+        // 找到被拖曳學生的原始位置
+        for (let r = 0; r < rows; r++) {
+            for (let c = 0; c < cols; c++) {
+                if (newChart[r][c] === draggedStudentId) {
+                    sourceRow = r;
+                    sourceCol = c;
+                    break;
+                }
+            }
+            if (sourceRow !== -1) break;
+        }
+
+        if (sourceRow === -1 || isForbidden(targetRow, targetCol)) {
+            // 學生未找到或目標位置是禁選
+            return;
+        }
+
+        const targetStudentId = newChart[targetRow][targetCol]; // 目標位置的學生 ID
+
+        // 交換學生位置
+        newChart[targetRow][targetCol] = draggedStudentId;
+        newChart[sourceRow][sourceCol] = targetStudentId; // 將目標位置的學生放回原始位置 (如果有的話)
+
+        setSeatingChart(newChart);
+        addChartToHistory(newChart); // 將手動調整後的座位表添加到歷史記錄
+        showMessageBox("座位已手動調整。", "info");
+    };
+
+    // 撤銷操作
+    const handleUndo = () => {
+        if (historyIndex > 0) {
+            setHistoryIndex(prev => prev - 1);
+            setSeatingChart(history[historyIndex - 1]);
+            showMessageBox("已撤銷一步。", "info");
+        } else {
+            showMessageBox("沒有更多可撤銷的操作。", "info");
+        }
+    };
+
+    // 重做操作
+    const handleRedo = () => {
+        if (historyIndex < history.length - 1) {
+            setHistoryIndex(prev => prev + 1);
+            setSeatingChart(history[historyIndex + 1]);
+            showMessageBox("沒有更多可重做的操作。", "info");
+        } else {
+            showMessageBox("沒有更多可重做的操作。", "info");
+        }
+    };
+
+    // 處理匯出數據 (JSON/CSV)
+    const handleExport = (format) => {
+        let dataToExport = {
+            studentNamesInput,
+            students,
+            rows,
+            cols,
+            forbiddenSeats,
+            seatingConditions,
+            seatingChart: JSON.stringify(seatingChart), // 將座位表匯出為 JSON 字串
+        };
+
+        let filename = 'seating_data';
+        let mimeType = '';
+        let content = '';
+
+        if (format === 'json') {
+            content = JSON.stringify(dataToExport, null, 2);
+            mimeType = 'application/json';
+            filename += '.json';
+        } else if (format === 'csv') {
+            // 將座位表匯出為 CSV 格式
+            let csvContent = "Row,Col,StudentName,StudentId\n";
+            for (let r = 0; r < rows; r++) {
+                for (let c = 0; c < cols; c++) {
+                    const studentId = seatingChart[r][c];
+                    const studentName = studentId ? students.find(s => s.id === studentId)?.name : '';
+                    csvContent += `${r + 1},${c + 1},"${studentName}","${studentId || ''}"\n`;
+                }
+            }
+            content = csvContent;
+            mimeType = 'text/csv';
+            filename += '.csv';
+        }
+
+        const blob = new Blob([content], { type: mimeType });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = filename;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        URL.revokeObjectURL(url);
+        showMessageBox(`數據已匯出為 ${format.toUpperCase()} 格式。`, "success");
+    };
+
+    // 處理匯入數據 (JSON/CSV)
+    const handleImport = (e) => {
+        const file = e.target.files[0];
+        if (!file) return;
+
+        const reader = new FileReader();
+        reader.onload = (event) => {
+            try {
+                const content = event.target.result;
+                let importedData = {};
+
+                if (file.name.endsWith('.json')) {
+                    importedData = JSON.parse(content);
+                } else if (file.name.endsWith('.csv')) {
+                    // 簡單的 CSV 匯入學生名單，假設每行一個姓名
+                    const lines = content.split('\n').map(line => line.trim()).filter(line => line !== '');
+                    // 假設 CSV 格式為 Row,Col,StudentName,StudentId，我們只取 StudentName
+                    const newStudentNames = lines.map(line => line.split(',')[2]).filter(name => name).join('\n');
+                    setStudentNamesInput(newStudentNames);
+                    const names = newStudentNames.split('\n').map(name => name.trim()).filter(name => name !== '');
+                    const newStudents = names.map(name => ({ id: generateUniqueId(), name: name }));
+                    setStudents(newStudents);
+                    showMessageBox("CSV 學生名單已匯入。", "success");
+                    return; // CSV 匯入只處理學生名單，不處理其他設定
+                } else {
+                    showMessageBox("不支援的文件格式。請匯入 .json 或 .csv 文件。", "error");
+                    return;
+                }
+
+                // 更新 React 狀態，使用匯入的數據
+                if (importedData.studentNamesInput) setStudentNamesInput(importedData.studentNamesInput);
+                if (importedData.students) setStudents(importedData.students);
+                if (importedData.rows) setRows(importedData.rows);
+                if (importedData.cols) setCols(importedData.cols);
+                if (importedData.forbiddenSeats) setForbiddenSeats(importedData.forbiddenSeats);
+                if (importedData.seatingConditions) setSeatingConditions(importedData.seatingConditions); // 這會還原條件
+                if (importedData.seatingChart) setSeatingChart(JSON.parse(importedData.seatingChart)); // 這會解析並還原座位表
+
+                showMessageBox("數據已成功匯入。", "success");
+            } catch (error) {
+                console.error("匯入文件時發生錯誤:", error);
+                showMessageBox("匯入文件時發生錯誤或文件格式不正確。", "error");
+            }
+        };
+        reader.readAsText(file);
+    };
+
+    // 處理確認並記錄座位表 (現在僅限本地確認)
+    const handleConfirmSeatingChart = useCallback(async () => {
+        if (seatingChart.length === 0) {
+            showMessageBox("沒有座位表可以確認。", "info");
+            return;
+        }
+        showMessageBox("座位表已在本地確認。Google Sheets 同步目前已停用。", "info");
+        // 如果未來需要重新啟用 Google Sheets 同步，可以在這裡添加 Apps Script 的 POST 請求邏輯
+    }, [seatingChart, showMessageBox]);
+
+
+    // 清空所有數據 (現在僅限清空本地狀態)
+    const clearAllData = useCallback(async () => {
+        // 清空本地狀態
+        setStudentNamesInput('');
+        setStudents([]);
+        setRows(5);
+        setCols(5);
+        setForbiddenSeats([]);
+        setSeatingConditions({});
+        setSeatingChart([]);
+        setHistory([]);
+        setHistoryIndex(-1);
+        setSelectedStudentId(null);
+        setCurrentStep(1);
+
+        showMessageBox("所有本地資料已清空。Google Sheets 同步目前已停用。", "success");
+        // 如果未來需要重新啟用 Google Sheets 同步，可以在這裡添加 Apps Script 的 POST 請求邏輯
+    }, [showMessageBox, setStudentNamesInput, setStudents, setRows, setCols, setForbiddenSeats, setSeatingConditions, setSeatingChart, setHistory, setHistoryIndex, setSelectedStudentId, setCurrentStep]);
+
+
+    // 輔助函數：根據學生 ID 獲取學生姓名
+    const getStudentNameById = (id) => students.find(s => s.id === id)?.name || '未知學生';
+
+    return (
+        <div className="min-h-screen bg-gray-100 p-4 font-sans text-gray-800 flex flex-col items-center">
+            {/* 將全局樣式插入到 DOM 中 */}
+            <style>{globalStyles}</style>
+
+            <div className="w-full max-w-4xl bg-white rounded-xl shadow-lg p-6 mb-8">
+                <h1 className="text-3xl font-bold text-center text-blue-700 mb-6">學生調位App</h1>
+                <div className="flex justify-center mb-6 space-x-4">
+                    {[1, 2, 3, 4].map(step => (
+                        <button
+                            key={step}
+                            onClick={() => setCurrentStep(step)}
+                            className={`px-6 py-2 rounded-full font-medium transition-all duration-300
+                                ${currentStep === step ? 'bg-blue-600 text-white shadow-md' : 'bg-gray-200 text-gray-700 hover:bg-blue-100'}`}
+                        >
+                            步驟 {step}
+                        </button>
+                    ))}
+                </div>
+
+                {/* 顯示 Google Sheets 同步狀態 */}
+                <div className="text-sm text-gray-500 text-center mb-4 p-2 bg-yellow-50 rounded-lg border border-yellow-200">
+                    目前已暫時停用 Google Sheets 同步功能。所有資料儲存和載入僅限於本地 JSON 檔案。
+                </div>
+
+                {/* 步驟 1: 學生名單與教室設定 */}
+                {currentStep === 1 && (
+                    <div className="space-y-6">
+                        <h2 className="text-2xl font-semibold text-blue-600 mb-4">步驟 1: 學生名單與教室設定</h2>
+                        <div>
+                            <label htmlFor="studentNames" className="block text-lg font-medium text-gray-700 mb-2">
+                                輸入學生姓名 (每行一個姓名):
+                            </label>
+                            <textarea
+                                id="studentNames"
+                                className="w-full p-3 border border-gray-300 rounded-lg focus:ring-blue-500 focus:border-blue-500"
+                                rows="8"
+                                value={studentNamesInput}
+                                onChange={handleStudentNamesChange}
+                                placeholder="例如：&#10;張小明&#10;李華&#10;陳麗"
+                            ></textarea>
+                            <p className="text-sm text-gray-500 mt-1">目前學生人數: {students.length}</p>
+                        </div>
+
+                        <div className="flex space-x-4">
+                            <div className="flex-1">
+                                <label htmlFor="rows" className="block text-lg font-medium text-gray-700 mb-2">
+                                    教室行數:
+                                </label>
+                                <input
+                                    type="number"
+                                    id="rows"
+                                    className="w-full p-3 border border-gray-300 rounded-lg focus:ring-blue-500 focus:border-blue-500"
+                                    value={rows}
+                                    onChange={handleRowsChange}
+                                    min="1"
+                                />
+                            </div>
+                            <div className="flex-1">
+                                <label htmlFor="cols" className="block text-lg font-medium text-gray-700 mb-2">
+                                    教室列數:
+                                </label>
+                                <input
+                                    type="number"
+                                    id="cols"
+                                    className="w-full p-3 border border-gray-300 rounded-lg focus:ring-blue-500 focus:border-blue-500"
+                                    value={cols}
+                                    onChange={handleColsChange}
+                                    min="1"
+                                />
+                            </div>
+                        </div>
+
+                        <div>
+                            <h3 className="text-xl font-semibold text-gray-700 mb-3">設定禁選位置 (點擊格子):</h3>
+                            <div
+                                className="grid gap-1 border border-gray-300 p-2 rounded-lg bg-gray-50"
+                                style={{ gridTemplateColumns: `repeat(${cols}, minmax(0, 1fr))` }}
+                            >
+                                {Array.from({ length: rows }).map((_, r) => (
+                                    Array.from({ length: cols }).map((__, c) => (
+                                        <div
+                                            key={`${r}-${c}`}
+                                            className={`grid-cell w-12 h-12 flex items-center justify-center border border-gray-200 rounded-md cursor-pointer transition-colors duration-200
+                                                ${isForbidden(r, c) ? 'bg-red-300 hover:bg-red-400' : 'bg-white hover:bg-gray-100'}`}
+                                            onClick={() => toggleForbiddenSeat(r, c)}
+                                        >
+                                            {isForbidden(r, c) ? '禁' : `${r + 1},${c + 1}`}
+                                        </div>
+                                    ))
+                                ))}
+                            </div>
+                            <p className="text-sm text-gray-500 mt-2">點擊格子以標記或取消標記為禁選位置。</p>
+                        </div>
+                    </div>
+                )}
+
+                {/* 步驟 2: 指定區域 */}
+                {currentStep === 2 && (
+                    <div className="space-y-6">
+                        <h2 className="text-2xl font-semibold text-blue-600 mb-4">步驟 2: 指定區域</h2>
+                        <p className="text-gray-700 mb-4">選擇學生並將他們分配到預設區域。每個學生只能分配到一個區域。</p>
+
+                        <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                            {/* 區域 A */}
+                            <div className="bg-gray-50 p-4 rounded-lg shadow-inner">
+                                <h3 className="text-xl font-semibold text-gray-700 mb-3">區域 A (每一列的最後一個非禁選座位、列1及列6)</h3>
+                                <p className="text-sm text-gray-600 mb-3">學生將被限制在每一列的最後一個非禁選座位、第1列或第6列的座位。</p>
+                                <div className="max-h-60 overflow-y-auto border border-gray-200 rounded-md p-2">
+                                    {students.length === 0 && <p className="text-gray-500">請先在步驟1輸入學生姓名。</p>}
+                                    {students.map(student => (
+                                        <label key={`areaA-${student.id}`} className="flex items-center py-1">
+                                            <input
+                                                type="checkbox"
+                                                checked={getStudentCondition(student.id).assignedArea === 'A'}
+                                                onChange={() => handleAssignedAreaToggle('A', student.id)}
+                                                className="rounded text-blue-600 focus:ring-blue-500"
+                                            />
+                                            <span className="ml-2 text-gray-700">{student.name}</span>
+                                        </label>
+                                    ))}
+                                </div>
+                            </div>
+
+                            {/* 區域 B */}
+                            <div className="bg-gray-50 p-4 rounded-lg shadow-inner">
+                                <h3 className="text-xl font-semibold text-gray-700 mb-3">區域 B (行1、2、3)</h3>
+                                <p className="text-sm text-gray-600 mb-3">學生將被限制在第1、2或3行的座位。</p>
+                                <div className="max-h-60 overflow-y-auto border border-gray-200 rounded-md p-2">
+                                    {students.length === 0 && <p className="text-gray-500">請先在步驟1輸入學生姓名。</p>}
+                                    {students.map(student => (
+                                        <label key={`areaB-${student.id}`} className="flex items-center py-1">
+                                            <input
+                                                type="checkbox"
+                                                checked={getStudentCondition(student.id).assignedArea === 'B'}
+                                                onChange={() => handleAssignedAreaToggle('B', student.id)}
+                                                className="rounded text-blue-600 focus:ring-blue-500"
+                                            />
+                                            <span className="ml-2 text-gray-700">{student.name}</span>
+                                        </label>
+                                    ))}
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                )}
+
+                {/* 步驟 3: 座位條件設定 */}
+                {currentStep === 3 && (
+                    <div className="space-y-6">
+                        <h2 className="text-2xl font-semibold text-blue-600 mb-4">步驟 3: 設定座位條件</h2>
+
+                        <div className="flex flex-col md:flex-row gap-6">
+                            {/* 學生列表 */}
+                            <div className="w-full md:w-1/3 bg-gray-50 p-4 rounded-lg shadow-inner">
+                                <h3 className="text-xl font-semibold text-gray-700 mb-3">選擇學生:</h3>
+                                <div className="max-h-80 overflow-y-auto border border-gray-200 rounded-md p-2 student-name-list">
+                                    {students.length === 0 && <p className="text-gray-500">請先在步驟1輸入學生姓名。</p>}
+                                    {students.map(student => (
+                                        <button
+                                            key={student.id}
+                                            onClick={() => handleStudentSelect(student.id)}
+                                            className={`block w-full text-left px-3 py-2 rounded-md transition-colors duration-200
+                                                ${selectedStudentId === student.id ? 'bg-blue-200 font-medium' : 'hover:bg-gray-100'}
+                                                ${getStudentConditionStatus(student.id) ? 'text-purple-600 font-semibold' : ''}`}
+                                        >
+                                            {student.name}
+                                        </button>
+                                    ))}
+                                </div>
+                            </div>
+
+                            {/* 條件設定面板 */}
+                            <div className="w-full md:w-2/3 bg-white p-6 rounded-lg shadow-md border border-gray-200">
+                                <h3 className="text-xl font-semibold text-gray-700 mb-4">
+                                    {selectedStudentId ? `為 "${getStudentNameById(selectedStudentId)}" 設定條件:` : '請從左側選擇一個學生來設定條件。'}
+                                </h3>
+
+                                {selectedStudentId && (
+                                    <div className="space-y-5">
+                                        {/* 不可同坐 */}
+                                        <div>
+                                            <h4 className="text-lg font-medium text-gray-700 mb-2">不可同坐 (必須符合):</h4>
+                                            <div className="grid grid-cols-2 gap-2 max-h-48 overflow-y-auto p-2 border rounded-md bg-gray-50">
+                                                {students.filter(s => s.id !== selectedStudentId).map(targetStudent => (
+                                                    <div key={targetStudent.id} className="flex items-center space-x-2">
+                                                        <input
+                                                            type="checkbox"
+                                                            id={`cannot-${selectedStudentId}-${targetStudent.id}`}
+                                                            checked={isCannotSitWithSelected(targetStudent.id)}
+                                                            onChange={() => handleCannotSitWithToggle(targetStudent.id)}
+                                                            className="rounded text-blue-600 focus:ring-blue-500"
+                                                        />
+                                                        <label htmlFor={`cannot-${selectedStudentId}-${targetStudent.id}`} className="text-gray-700 flex-1">
+                                                            {targetStudent.name}
+                                                        </label>
+                                                    </div>
+                                                ))}
+                                            </div>
+                                        </div>
+
+                                        {/* 需要同坐 */}
+                                        <div>
+                                            <h4 className="text-lg font-medium text-gray-700 mb-2">需要同坐 (左右位置，必須符合):</h4>
+                                            <div className="grid grid-cols-2 gap-2 max-h-48 overflow-y-auto p-2 border rounded-md bg-gray-50">
+                                                {students.filter(s => s.id !== selectedStudentId).map(targetStudent => (
+                                                    <div key={targetStudent.id} className="flex items-center space-x-2">
+                                                        <input
+                                                            type="checkbox"
+                                                            id={`must-${selectedStudentId}-${targetStudent.id}`}
+                                                            checked={isMustSitWithSelected(targetStudent.id)}
+                                                            onChange={() => handleMustSitWithToggle(targetStudent.id)}
+                                                            className="rounded text-blue-600 focus:ring-blue-500"
+                                                        />
+                                                        <label htmlFor={`must-${selectedStudentId}-${targetStudent.id}`} className="text-gray-700 flex-1">
+                                                            {targetStudent.name}
+                                                        </label>
+                                                    </div>
+                                                ))}
+                                            </div>
+                                        </div>
+
+                                        {/* 指定行/列 */}
+                                        <div>
+                                            <h4 className="text-lg font-medium text-gray-700 mb-2">指定行/列 (多選，符合其中一個即可，必須符合):</h4>
+                                            <div className="flex flex-wrap gap-2 mb-2">
+                                                <span className="font-medium text-gray-600">行:</span>
+                                                {Array.from({ length: rows }).map((_, i) => (
+                                                    <label key={`row-${i}`} className="inline-flex items-center">
+                                                        <input
+                                                            type="checkbox"
+                                                            checked={getStudentCondition(selectedStudentId).assignedRows?.includes(i)}
+                                                            onChange={() => handleAssignedRowToggle(i)}
+                                                            className="rounded text-blue-600 focus:ring-blue-500"
+                                                        />
+                                                        <span className="ml-1">{i + 1}</span>
+                                                    </label>
+                                                ))}
+                                            </div>
+                                            <div className="flex flex-wrap gap-2">
+                                                <span className="font-medium text-gray-600">列:</span>
+                                                {Array.from({ length: cols }).map((_, i) => (
+                                                    <label key={`col-${i}`} className="inline-flex items-center">
+                                                        <input
+                                                            type="checkbox"
+                                                            checked={getStudentCondition(selectedStudentId).assignedCols?.includes(i)}
+                                                            onChange={() => handleAssignedColToggle(i)}
+                                                            className="rounded text-blue-600 focus:ring-blue-500"
+                                                        />
+                                                        <span className="ml-1">{i + 1}</span>
+                                                    </label>
+                                                ))}
+                                            </div>
+                                        </div>
+
+                                        {/* 指定位置 - 視覺化選擇 */}
+                                        <div>
+                                            <h4 className="text-lg font-medium text-gray-700 mb-2">指定位置 (點擊網格選擇，必須符合):</h4>
+                                            <div
+                                                className="grid gap-1 border border-gray-300 p-2 rounded-lg bg-gray-50"
+                                                style={{ gridTemplateColumns: `repeat(${cols}, minmax(0, 1fr))` }}
+                                            >
+                                                {Array.from({ length: rows }).map((_, r) => (
+                                                    Array.from({ length: cols }).map((__, c) => (
+                                                        <div
+                                                            key={`assigned-seat-${r}-${c}`}
+                                                            className={`assigned-seat-grid-cell w-12 h-12 flex items-center justify-center border border-gray-200 rounded-md cursor-pointer transition-colors duration-200
+                                                                ${isForbidden(r, c) ? 'bg-red-300 cursor-not-allowed' : 'bg-white hover:bg-gray-100'}
+                                                                ${getStudentCondition(selectedStudentId).assignedSeat?.row === r && getStudentCondition(selectedStudentId).assignedSeat?.col === c ? 'selected-seat' : ''}`}
+                                                            onClick={() => !isForbidden(r, c) && handleAssignedSeatSelect(r, c)}
+                                                        >
+                                                            {isForbidden(r, c) ? '禁' : `${r + 1},${c + 1}`}
+                                                        </div>
+                                                    ))
+                                                ))}
+                                            </div>
+                                            <p className="text-sm text-gray-500 mt-1">點擊格子以指定或取消指定座位。</p>
+                                        </div>
+                                    </div>
+                                )}
+                            </div>
+                        </div>
+                    </div>
+                )}
+
+                {/* 步驟 4: 產生座位表與手動調整 */}
+                {currentStep === 4 && (
+                    <div className="space-y-6">
+                        <h2 className="text-2xl font-semibold text-blue-600 mb-4">步驟 4: 產生座位表與手動調整</h2>
+
+                        <button
+                            onClick={generateSeatingChart}
+                            disabled={isGenerating || students.length === 0}
+                            className={`px-8 py-3 rounded-full font-bold text-white transition-all duration-300 shadow-md
+                                ${isGenerating ? 'bg-gray-400 cursor-not-allowed' : 'bg-green-600 hover:bg-green-700 active:bg-green-800'}`}
+                        >
+                            {isGenerating ? '正在生成...' : '自動產生座位表'}
+                        </button>
+                        {isGenerating && <p className="text-sm text-gray-600 mt-2">自動隨機變化3秒後停止。</p>}
+
+                        <div className="flex space-x-2 mt-4">
+                            <button
+                                onClick={handleUndo}
+                                disabled={historyIndex <= 0}
+                                className="px-6 py-2 rounded-full bg-yellow-500 text-white font-medium hover:bg-yellow-600 disabled:bg-gray-400 disabled:cursor-not-allowed"
+                            >
+                                撤銷
+                            </button>
+                            <button
+                                onClick={handleRedo}
+                                disabled={historyIndex >= history.length - 1}
+                                className="px-6 py-2 rounded-full bg-yellow-500 text-white font-medium hover:bg-yellow-600 disabled:bg-gray-400 disabled:cursor-not-allowed"
+                            >
+                                重做
+                            </button>
+                        </div>
+
+                        {/* 新增的「確認並記錄座位表」按鈕 */}
+                        <button
+                            onClick={handleConfirmSeatingChart}
+                            disabled={seatingChart.length === 0 || isGenerating}
+                            className="px-8 py-3 rounded-full font-bold text-white transition-all duration-300 shadow-md bg-purple-600 hover:bg-purple-700 active:bg-purple-800 mt-4"
+                        >
+                            確認並記錄座位表
+                        </button>
+
+
+                        <h3 className="text-xl font-semibold text-gray-700 mb-3 mt-6">座位網格 (可拖動調整):</h3>
+                        {seatingChart.length > 0 && (
+                            <div
+                                ref={chartRef}
+                                className="grid gap-1 border border-gray-300 p-2 rounded-lg bg-gray-50 overflow-auto"
+                                style={{
+                                    gridTemplateColumns: `repeat(${cols}, minmax(100px, 1fr))`,
+                                    minWidth: `${cols * 100}px`
+                                }}
+                            >
+                                {Array.from({ length: rows }).map((_, r) => (
+                                    Array.from({ length: cols }).map((__, c) => {
+                                        const studentIdInSeat = seatingChart[r][c];
+                                        const studentNameInSeat = studentIdInSeat ? getStudentNameById(studentIdInSeat) : '';
+                                        const isCurrentSelected = selectedStudentId === studentIdInSeat;
+                                        // 獲取選中學生的條件 (如果有的話)
+                                        const selectedStudentConditions = selectedStudentId ? getStudentCondition(selectedStudentId) : {};
+
+                                        let highlightColor = '';
+                                        if (selectedStudentId && studentIdInSeat) {
+                                            // 檢查座位上的學生是否是被選中學生的「不可同坐」夥伴
+                                            if (selectedStudentConditions.cannotSitWith?.some(cs => cs.targetId === studentIdInSeat)) {
+                                                highlightColor = 'bg-red-200';
+                                            }
+                                            // 檢查座位上的學生是否是被選中學生的「需要同坐」夥伴
+                                            if (selectedStudentConditions.mustSitWith?.some(ms => ms.targetId === studentIdInSeat)) {
+                                                highlightColor = 'bg-green-200';
+                                            }
+                                            // 反向檢查：被選中學生是否是座位上學生的「不可同坐」夥伴
+                                            const studentInSeatConditions = getStudentCondition(studentIdInSeat);
+                                            if (studentInSeatConditions.cannotSitWith?.some(cs => cs.targetId === selectedStudentId)) {
+                                                highlightColor = 'bg-red-200';
+                                            }
+                                            // 反向檢查：被選中學生是否是座位上學生的「需要同坐」夥伴
+                                            if (studentInSeatConditions.mustSitWith?.some(ms => ms.targetId === selectedStudentId)) {
+                                                highlightColor = 'bg-green-200';
+                                            }
+                                        }
+
+                                        return (
+                                            <div
+                                                key={`${r}-${c}`}
+                                                className={`grid-cell w-full h-24 flex flex-col items-center justify-center border border-gray-200 rounded-md transition-colors duration-200 text-center p-1
+                                                    ${isForbidden(r, c) ? 'bg-red-300' : 'bg-white hover:bg-gray-100'}
+                                                    ${isCurrentSelected ? 'border-2 border-blue-500 bg-blue-100' : ''}
+                                                    ${highlightColor}`}
+                                                onDragOver={handleDragOver}
+                                                onDrop={(e) => handleDrop(e, r, c)}
+                                                onClick={() => handleStudentSelect(studentIdInSeat)} // 允許點擊座位上的學生來選擇
+                                            >
+                                                <span className="text-xs text-gray-500 mb-1">{r + 1},{c + 1}</span>
+                                                {studentIdInSeat && (
+                                                    <div
+                                                        draggable
+                                                        onDragStart={(e) => handleDragStart(e, studentIdInSeat)}
+                                                        className="w-full bg-blue-500 text-white text-sm font-medium py-1 px-2 rounded-md cursor-grab active:cursor-grabbing shadow-sm hover:bg-blue-600"
+                                                    >
+                                                        {studentNameInSeat}
+                                                    </div>
+                                                )}
+                                            </div>
+                                        );
+                                    })
+                                ))}
+                            </div>
+                        )}
+                        {seatingChart.length === 0 && students.length > 0 && (
+                            <p className="text-gray-500 mt-4">請點擊「自動產生座位表」來生成初始座位表。</p>
+                        )}
+                        {seatingChart.length === 0 && students.length === 0 && (
+                            <p className="text-gray-500 mt-4">請先在步驟1輸入學生姓名。</p>
+                        )}
+                    </div>
+                )}
+
+                {/* 全局操作 */}
+                <div className="mt-8 pt-6 border-t border-gray-200 space-y-4">
+                    <h2 className="text-2xl font-semibold text-blue-600 mb-4">資料管理</h2>
+                    <div className="flex flex-wrap gap-4">
+                        <button
+                            onClick={() => handleExport('json')}
+                            className="px-6 py-2 rounded-full bg-indigo-600 text-white font-medium hover:bg-indigo-700 shadow-md"
+                        >
+                            匯出為 JSON
+                        </button>
+                        <button
+                            onClick={() => handleExport('csv')}
+                            className="px-6 py-2 rounded-full bg-indigo-600 text-white font-medium hover:bg-indigo-700 shadow-md"
+                        >
+                            匯出座位表為 CSV
+                        </button>
+                        <label className="px-6 py-2 rounded-full bg-gray-600 text-white font-medium hover:bg-gray-700 cursor-pointer shadow-md">
+                            匯入資料
+                            <input type="file" accept=".json,.csv" onChange={handleImport} className="hidden" />
+                        </label>
+                        <button
+                            onClick={clearAllData}
+                            className="px-6 py-2 rounded-full bg-red-600 text-white font-medium hover:bg-red-700 shadow-md"
+                        >
+                            清空所有資料
+                        </button>
+                    </div>
+                </div>
+            </div>
+
+            {/* 訊息框 */}
+            <div
+                ref={messageBoxRef}
+                className="fixed bottom-4 right-4 p-4 rounded-lg shadow-lg z-50 transition-opacity duration-300 opacity-0"
+                style={{ pointerEvents: 'none' }} // 讓它不可互動
+            >
+                {/* 訊息內容將由 showMessageBox 設置 */}
+            </div>
+        </div>
+    );
+};
+
+export default App;
