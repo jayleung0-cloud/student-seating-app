@@ -103,11 +103,7 @@
         const isForbidden = (r, c) => forbiddenSeats.some(seat => seat.row === r && seat.col === c);
 
         const checkPlacementValidity = (studentId, r, c, chartState, currentPlacedStudents) => {
-            // 這個函數的完整邏輯與您原始的 React 程式碼相同
-            // 由於其複雜性，我們在這裡只展示其存在
-            // 實際的實現將需要將 React 的邏輯完全轉換為純 JavaScript
-            // 為了保持單一檔案，我們假設這個邏輯已在後面實現
-             if (!isValidSeat(r, c) || chartState[r][c] !== null) {
+            if (!isValidSeat(r, c) || chartState[r][c] !== null) {
                 return { valid: false, conflictMessage: null, isTryConflict: false };
             }
 
@@ -147,7 +143,6 @@
                 return neighbors;
             };
 
-            // 優先級 3: 不可同坐 (必須符合)
             const cannotSitWithConditions = conditions.cannotSitWith || [];
             for (const condition of cannotSitWithConditions) {
                 const { targetId } = condition;
@@ -158,7 +153,6 @@
                 }
             }
 
-            // 優先級 4: 需要同坐 (必須符合)
             const mustSitWithConditions = conditions.mustSitWith || [];
             for (const condition of mustSitWithConditions) {
                 const { targetId } = condition;
@@ -177,7 +171,6 @@
                 }
             }
 
-            // 優先級 5: 指定行/列 (必須符合)
             if (conditions.assignedRows && conditions.assignedRows.length > 0 && !conditions.assignedRows.includes(r)) {
                 return { valid: false, conflictMessage: `學生 ${student.name} 無法坐在 [${r + 1}, ${c + 1}]，因為與「指定行」條件衝突。`, isTryConflict: false };
             }
@@ -185,7 +178,6 @@
                 return { valid: false, conflictMessage: `學生 ${student.name} 無法坐在 [${r + 1}, ${c + 1}]，因為與「指定列」條件衝突。`, isTryConflict: false };
             }
 
-            // 優先級 6: 指定區域 (盡量符合)
             let isTryConflict = false;
             if (conditions.assignedArea) {
                 let meetsAreaConstraint = false;
@@ -501,8 +493,17 @@
             if (!container) return;
 
             const generateBtn = document.getElementById('generate-btn');
-            generateBtn.textContent = isGenerating ? '正在生成...' : '自動產生座位表';
-            generateBtn.disabled = isGenerating || students.length === 0;
+            if(generateBtn) {
+                 generateBtn.textContent = isGenerating ? '正在生成...' : '自動產生座位表';
+                 generateBtn.disabled = isGenerating || students.length === 0;
+                 if (!isGenerating && students.length > 0) {
+                     generateBtn.classList.add('bg-blue-600', 'hover:bg-blue-700');
+                 } else {
+                     generateBtn.classList.remove('bg-blue-600', 'hover:bg-blue-700');
+                     generateBtn.classList.add('bg-gray-400', 'cursor-not-allowed');
+                 }
+            }
+
 
             if (seatingChart.length > 0) {
                 container.style.gridTemplateColumns = `repeat(${cols}, minmax(100px, 1fr))`;
