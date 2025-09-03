@@ -60,8 +60,8 @@
         let currentStep = 1;
         let studentNamesInput = '';
         let students = [];
-        let rows = 5;
-        let cols = 5;
+        let rows = 6;
+        let cols = 6;
         let forbiddenSeats = [];
         let selectedStudentId = null;
         let seatingConditions = {};
@@ -141,6 +141,8 @@
         const getStudentCondition = (studentId) => seatingConditions[studentId] || {};
         const isForbidden = (r, c) => forbiddenSeats.some(seat => seat.row === r && seat.col === c);
 
+        const isValidSeat = (r, c) => r >= 0 && r < rows && c >= 0 && c < cols && !isForbidden(r, c);
+
         const checkPlacementValidity = (studentId, r, c, chartState, currentPlacedStudents) => {
             if (!isValidSeat(r, c) || chartState[r][c] !== null) {
                 return { valid: false, conflictMessage: null, isTryConflict: false };
@@ -150,8 +152,6 @@
             const student = students.find(s => s.id === studentId);
 
             const studentById = new Map(students.map(s => [s.id, s]));
-
-            const isValidSeat = (r, c) => r >= 0 && r < rows && c >= 0 && c < cols && !isForbidden(r, c);
 
             const getNeighbors = (r, c) => {
                 const neighbors = [];
@@ -738,7 +738,6 @@
 
             const studentById = new Map(students.map(s => [s.id, s]));
 
-            const isValidSeat = (r, c) => r >= 0 && r < rows && c >= 0 && c < cols && !isForbidden(r, c);
             const getNeighbors = (r, c) => {
                 const neighbors = [];
                 const directions = [[-1, 0], [1, 0], [0, -1], [0, 1], [-1, -1], [-1, 1], [1, -1], [1, 1]];
