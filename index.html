@@ -1,8 +1,8 @@
 <!DOCTYPE html>
 <html lang="zh-TW">
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
     <title>學生調位App</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
@@ -57,7 +57,9 @@
     <div id="message-box" class="fixed bottom-4 right-4 p-4 rounded-lg shadow-lg z-50 transition-opacity duration-300 opacity-0" style="pointer-events: none;"></div>
 
     <script>
-        // State variables
+        // -------------------------------
+        // 原始主程式（保留你所有的邏輯）
+        // -------------------------------
         let currentStep = 1;
         let studentNamesInput = '';
         let students = [];
@@ -111,13 +113,11 @@
 
         const generateUniqueId = () => crypto.randomUUID();
 
-        // DOM Elements
         const stepBtns = document.querySelectorAll('.step-btn');
         const stepContent = document.getElementById('step-content');
         const messageBox = document.getElementById('message-box');
         let messageTimeout = null;
 
-        // Utility functions
         const showMessageBox = (message, type = 'info') => {
             if (messageTimeout) clearTimeout(messageTimeout);
             messageBox.textContent = message;
@@ -250,19 +250,21 @@
             return { valid: true, conflictMessage: null, isTryConflict: isTryConflict };
         };
 
-
-        // Main render function
+        // Main render function (now includes step 5)
         const renderStep = () => {
             stepContent.innerHTML = '';
             stepBtns.forEach(btn => btn.classList.remove('bg-blue-600', 'text-white', 'shadow-md'));
-            stepBtns[currentStep - 1].classList.add('bg-blue-600', 'text-white', 'shadow-md');
+            // safety: stepBtns might be NodeList of 5 now; ensure index exists
+            if (stepBtns[currentStep - 1]) stepBtns[currentStep - 1].classList.add('bg-blue-600', 'text-white', 'shadow-md');
 
             if (currentStep === 1) renderStep1();
             if (currentStep === 2) renderStep2();
             if (currentStep === 3) renderStep3();
             if (currentStep === 4) renderStep4();
+            if (currentStep === 5) renderStep5();
         };
 
+        // ---------- (原始步驟1~4) ----------
         const renderStep1 = () => {
             stepContent.innerHTML = `
                 <div class="space-y-6">
@@ -589,7 +591,7 @@
             }
         };
 
-        // Event handlers
+        // Event handlers (original)
         const handleStudentNamesChange = (e) => {
             studentNamesInput = e.target.value;
             const names = e.target.value.split('\n').map(name => name.trim()).filter(name => name !== '');
@@ -983,7 +985,6 @@
             }
         };
 
-
         const handleDragStart = (e, studentId) => e.dataTransfer.setData('studentId', studentId);
         const handleDrop = (e, targetRow, targetCol) => {
             e.preventDefault();
@@ -1165,11 +1166,12 @@
             if (showMsg) showMessageBox("所有本地資料已清空。", "success");
         };
 
-        // Event listeners for step buttons
+        // Event listeners for step buttons (1-4 existing)
         document.getElementById('step1-btn').addEventListener('click', () => { currentStep = 1; renderStep(); });
         document.getElementById('step2-btn').addEventListener('click', () => { currentStep = 2; renderStep(); });
         document.getElementById('step3-btn').addEventListener('click', () => { currentStep = 3; renderStep(); });
         document.getElementById('step4-btn').addEventListener('click', () => { currentStep = 4; renderStep(); });
+
         document.getElementById('export-json-btn').addEventListener('click', () => handleExport('json'));
         document.getElementById('export-csv-btn').addEventListener('click', () => handleExport('csv'));
         document.getElementById('export-png-btn').addEventListener('click', () => handleExport('png'));
@@ -1186,101 +1188,105 @@
             renderStep();
         };
 
-        // The following code is a fallback for `window.confirm`.
-        // This is to ensure that the app still works if the window confirm is not available.
+        // Fallback for confirm (keeps behavior consistent)
         window.confirm = (message) => {
             const result = window.prompt(message + "\n\n請輸入 '確定' 來繼續。");
             return result === '確定';
-         };
-// 健壯版 renderStep5：可直接貼上替換原函數
-function renderStep5() {
-  const content = document.getElementById('step-content');
-  content.innerHTML = `
-    <div class='space-y-6'>
-      <h2 class='text-2xl font-semibold text-blue-600 mb-4'>步驟 5: 上下顛倒顯示座位表</h2>
-      <div id='flipped-seating' class='grid gap-1 border border-gray-300 p-2 rounded-lg bg-gray-50 overflow-auto'></div>
-      <div class="flex gap-2 mt-3">
-        <button id='export-flipped-png-btn' class='px-6 py-2 rounded-full bg-indigo-600 text-white font-medium hover:bg-indigo-700 shadow-md'>匯出顛倒圖片</button>
-        <button id='refresh-flipped-btn' class='px-6 py-2 rounded-full bg-gray-400 text-white font-medium hover:bg-gray-500 shadow-md'>重新讀取本機資料</button>
-      </div>
-      <p id="step5-msg" class="text-sm text-red-500 mt-2"></p>
-    </div>
-  `;
+        };
 
-  const msgEl = document.getElementById('step5-msg');
-  try {
-    const raw = localStorage.getItem('seating_app_data');
-    console.log('[step5] localStorage raw:', raw);
-    if (!raw) {
-      msgEl.textContent = '尚無本地座位表資料。請先在步驟 4 產生座位表或匯入 JSON。';
-      return;
-    }
+        // -------------------------------
+        // 新增：步驟5（健壯版）
+        // -------------------------------
+        function renderStep5() {
+          stepContent.innerHTML = `
+            <div class='space-y-6'>
+              <h2 class='text-2xl font-semibold text-blue-600 mb-4'>步驟 5: 上下顛倒顯示座位表</h2>
+              <div id='flipped-seating' class='grid gap-1 border border-gray-300 p-2 rounded-lg bg-gray-50 overflow-auto'></div>
+              <div class="flex gap-2 mt-3">
+                <button id='export-flipped-png-btn' class='px-6 py-2 rounded-full bg-indigo-600 text-white font-medium hover:bg-indigo-700 shadow-md'>匯出顛倒圖片</button>
+                <button id='refresh-flipped-btn' class='px-6 py-2 rounded-full bg-gray-400 text-white font-medium hover:bg-gray-500 shadow-md'>重新讀取本機資料</button>
+              </div>
+              <p id="step5-msg" class="text-sm text-red-500 mt-2"></p>
+            </div>
+          `;
 
-    let saved;
-    try {
-      saved = JSON.parse(raw);
-    } catch (e) {
-      console.error('[step5] JSON 解析失敗', e);
-      msgEl.textContent = '本地資料格式錯誤（JSON 解析失敗）。請重新匯入正確的 JSON。';
-      return;
-    }
+          const msgEl = document.getElementById('step5-msg');
+          try {
+            const raw = localStorage.getItem('seating_app_data');
+            console.log('[step5] localStorage raw:', raw);
+            if (!raw) {
+              msgEl.textContent = '尚無本地座位表資料。請先在步驟 4 產生座位表或匯入 JSON。';
+              return;
+            }
 
-    if (!Array.isArray(saved.seatingChart) || saved.seatingChart.length === 0) {
-      msgEl.textContent = '找不到 seatingChart 或座位表為空。請先在步驟 4 產生座位表。';
-      console.log('[step5] saved keys:', Object.keys(saved));
-      return;
-    }
+            let saved;
+            try {
+              saved = JSON.parse(raw);
+            } catch (e) {
+              console.error('[step5] JSON 解析失敗', e);
+              msgEl.textContent = '本地資料格式錯誤（JSON 解析失敗）。請重新匯入正確的 JSON。';
+              return;
+            }
 
-    const seatingChart = saved.seatingChart;
-    const students = Array.isArray(saved.students) ? saved.students : [];
-    const rows = saved.rows || seatingChart.length;
-    const cols = saved.cols || (seatingChart[0] ? seatingChart[0].length : 0);
-    const getStudentNameById = (id) => students.find(s => s.id === id)?.name || '';
+            if (!Array.isArray(saved.seatingChart) || saved.seatingChart.length === 0) {
+              msgEl.textContent = '找不到 seatingChart 或座位表為空。請先在步驟 4 產生座位表。';
+              console.log('[step5] saved keys:', Object.keys(saved));
+              return;
+            }
 
-    const grid = document.getElementById('flipped-seating');
-    grid.innerHTML = '';
-    grid.style.gridTemplateColumns = `repeat(${cols}, minmax(100px, 1fr))`;
-    grid.style.minWidth = `${cols * 100}px`;
+            const seatingChartLocal = saved.seatingChart;
+            const studentsLocal = Array.isArray(saved.students) ? saved.students : [];
+            const rowsLocal = saved.rows || seatingChartLocal.length;
+            const colsLocal = saved.cols || (seatingChartLocal[0] ? seatingChartLocal[0].length : 0);
+            const getStudentNameByIdLocal = (id) => studentsLocal.find(s => s.id === id)?.name || '';
 
-    for (let r = 0; r < rows; r++) {
-      for (let c = 0; c < cols; c++) {
-        const studentId = (seatingChart[r] && seatingChart[r][c]) ? seatingChart[r][c] : null;
-        const studentName = getStudentNameById(studentId);
-        const cell = document.createElement('div');
-        cell.className = 'w-full h-24 flex flex-col items-center justify-center border border-gray-200 rounded-md bg-white text-center p-1';
-        cell.innerHTML = `
-          <span class='text-xs text-gray-500 mb-1'>${r + 1},${c + 1}</span>
-          <div class='transform rotate-180 text-sm font-medium text-blue-600'>${studentName || ''}</div>
-        `;
-        grid.appendChild(cell);
-      }
-    }
+            const grid = document.getElementById('flipped-seating');
+            grid.innerHTML = '';
+            grid.style.gridTemplateColumns = `repeat(${colsLocal}, minmax(100px, 1fr))`;
+            grid.style.minWidth = `${colsLocal * 100}px`;
 
-    // 匯出顛倒版圖片
-    const exportBtn = document.getElementById('export-flipped-png-btn');
-    exportBtn.onclick = () => {
-      html2canvas(grid, { scale: 2, useCORS: true }).then(canvas => {
-        const img = canvas.toDataURL('image/png');
-        const a = document.createElement('a');
-        a.href = img;
-        a.download = 'flipped_seating_chart.png';
-        document.body.appendChild(a);
-        a.click();
-        document.body.removeChild(a);
-      }).catch(err => {
-        console.error('[step5] html2canvas error:', err);
-        msgEl.textContent = '匯出圖片失敗，請在 Console 檢查錯誤。';
-      });
-    };
+            for (let r = 0; r < rowsLocal; r++) {
+              for (let c = 0; c < colsLocal; c++) {
+                const studentId = (seatingChartLocal[r] && seatingChartLocal[r][c]) ? seatingChartLocal[r][c] : null;
+                const studentName = getStudentNameByIdLocal(studentId);
+                const cell = document.createElement('div');
+                cell.className = 'w-full h-24 flex flex-col items-center justify-center border border-gray-200 rounded-md bg-white text-center p-1';
+                cell.innerHTML = `
+                  <span class='text-xs text-gray-500 mb-1'>${r + 1},${c + 1}</span>
+                  <div class='transform rotate-180 text-sm font-medium text-blue-600'>${studentName || ''}</div>
+                `;
+                grid.appendChild(cell);
+              }
+            }
 
-    document.getElementById('refresh-flipped-btn').onclick = () => renderStep5();
-    msgEl.textContent = ''; // 清除錯誤訊息
-    console.log('[step5] render completed, rows,cols:', rows, cols);
-  } catch (err) {
-    console.error('[step5] 未預期錯誤:', err);
-    msgEl.textContent = '發生未預期錯誤，請查看 Console。';
-  }
-}
+            // 匯出顛倒版圖片
+            const exportBtn = document.getElementById('export-flipped-png-btn');
+            exportBtn.onclick = () => {
+              html2canvas(grid, { scale: 2, useCORS: true }).then(canvas => {
+                const img = canvas.toDataURL('image/png');
+                const a = document.createElement('a');
+                a.href = img;
+                a.download = 'flipped_seating_chart.png';
+                document.body.appendChild(a);
+                a.click();
+                document.body.removeChild(a);
+              }).catch(err => {
+                console.error('[step5] html2canvas error:', err);
+                msgEl.textContent = '匯出圖片失敗，請在 Console 檢查錯誤。';
+              });
+            };
+
+            document.getElementById('refresh-flipped-btn').onclick = () => renderStep5();
+            msgEl.textContent = ''; // 清除錯誤訊息
+            console.log('[step5] render completed, rows,cols:', rowsLocal, colsLocal);
+          } catch (err) {
+            console.error('[step5] 未預期錯誤:', err);
+            msgEl.textContent = '發生未預期錯誤，請查看 Console。';
+          }
+        }
+
+        // 讓步驟5按鈕能運作（補上事件綁定）
+        document.getElementById('step5-btn').addEventListener('click', () => { currentStep = 5; renderStep(); });
 
     </script>
 </body>
